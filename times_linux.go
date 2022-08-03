@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "unsafe"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -81,20 +83,27 @@ func Lstat(name string) (Timespec, error) {
 	return stat(name, os.Lstat)
 }
 
+//go:noescape
+//go:linkname statX github.com/djherbis/times.statXHelper
+func statX(err *error, statx *unix.Statx_t, sc syscall.RawConn) error
+
+func statXHelper(err *error, statx *unix.Statx_t, sc syscall.RawConn) error {
+	return sc.Control(func(fd uintptr) {
+		*err = unix.Statx(int(fd), "", unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT, unix.STATX_ATIME|unix.STATX_MTIME|unix.STATX_CTIME|unix.STATX_BTIME, statx)
+	})
+}
+
 // StatFile returns the Timespec for the given *os.File.
 func StatFile(file *os.File) (Timespec, error) {
 	if atomic.LoadInt32(&supportsStatx) == 1 {
-		var statx unix.Statx_t
-
 		sc, err := file.SyscallConn()
 		if err != nil {
 			return nil, err
 		}
 
 		var statxErr error
-		err = sc.Control(func(fd uintptr) {
-			statxErr = unix.Statx(int(fd), "", unix.AT_EMPTY_PATH|unix.AT_STATX_SYNC_AS_STAT, unix.STATX_ATIME|unix.STATX_MTIME|unix.STATX_CTIME|unix.STATX_BTIME, &statx)
-		})
+		var statx unix.Statx_t
+		err = statX(&statxErr, &statx, sc)
 		if err != nil {
 			return nil, err
 		}
